@@ -1,0 +1,200 @@
+#!/home/dikson/.MiniConda_/envs/Dados/bin/python
+# coding: utf-8
+
+import subprocess
+from datetime import datetime, time as dtime
+import time
+import re
+from hora_certa import get_today_sun_times
+
+# CONTEM MELHORIAS NOS HORARIOS DE TRANSIÇÃO 07-11-25
+
+# === CONFIGURAÇÕES GERAIS ===
+BRIGHTNESS_PATH = "/sys/class/backlight/intel_backlight/brightness"
+LOG_FILE ="/mnt/.system_offload/log/pos_Blue_Brilho.log"
+HDMI_OUTPUT = "HDMI-1-0"  # Ajuste se necessário
+
+# === CONFIGURAÇÕES OTIMIZADAS PARA HDMI ===
+SETTINGS = {
+    "morning": {
+        "brightness": 9060,
+        "color_temp": 4500,
+        "gamma_hdmi": "1.00:0.95:0.90",
+        "hdmi_brightness": 0.80
+    },
+    "afternoon": {
+        "brightness": 14400,
+        "color_temp": 6500,
+        "gamma_hdmi": "1.00:1.00:1.00",
+        "hdmi_brightness": 1.00
+    },
+    "evening": {
+        "brightness": 4000,
+        "color_temp": 3500,
+        "gamma_hdmi": "1.00:0.90:0.60",
+        "hdmi_brightness": 0.50
+    },
+    "night": {
+        "brightness": 1000,
+        "color_temp": 2700,
+        "gamma_hdmi": "1.00:0.70:0.15",
+        "hdmi_brightness": 0.30
+    }
+}
+
+# === NOVO: TEMPOS DE TRANSIÇÃO SAZONAIS ===
+# Mapeamento: Mês (1=Jan, 12=Dez) → Horários Otimizados (HS - Brasil)
+# Adaptado para que a transição ocorra de forma mais natural com o nascer/pôr do sol.
+
+
+
+# === FUNÇÕES AUXILIARES ===
+
+# === NOVO: CACHE DE TEMPOS DE TRANSIÇÃO DIÁRIA ===
+_DAILY_TRANSITION_CACHE = {"day": -1, "times": None}
+
+def get_daily_transitions():
+    """Retorna os horários de transição (MORNING/EVENING) baseados no nascer/pôr do sol de HOJE."""
+    global _DAILY_TRANSITION_CACHE
+    now = datetime.now()
+
+    # Se for um novo dia, recalcula e atualiza o cache
+    if now.day != _DAILY_TRANSITION_CACHE["day"]:
+        log_message(f"--- RECALCULANDO: Novo dia ({now.day}) ---")
+        try:
+            # Chama a função que calcula Nascer/Pôr do Sol de forma precisa
+            sun_times = get_today_sun_times()
+            _DAILY_TRANSITION_CACHE["times"] = sun_times
+            _DAILY_TRANSITION_CACHE["day"] = now.day
+        except Exception as e:
+            log_message(f"ERRO ao calcular sun times: {e}. Usando fallback.")
+            # Fallback em caso de erro (os horários fixos do dicionário removido)
+            _DAILY_TRANSITION_CACHE["times"] = {
+                "MORNING_START": dtime(6, 30),
+                "EVENING_START": dtime(18, 00)
+            }
+
+    times = _DAILY_TRANSITION_CACHE["times"]
+
+    # AFTERNOON_START e NIGHT_START permanecem fixos
+    return {
+        "NIGHT_START": dtime(0, 0),
+        "AFTERNOON_START": dtime(12, 0),
+        "MORNING_START": times["MORNING_START"],
+        "EVENING_START": times["EVENING_START"]
+    }
+
+# === FUNÇÕES PRINCIPAIS (mantidas com ajustes) ===
+
+def log_message(message):
+    with open(LOG_FILE, "a") as log:
+        log.write(f"{datetime.now()} - {message}\n")
+
+def is_monitor_off():
+    """ Evitar que o script tente ajustar brilho/gamma quando o monitor está desligado (ou em DPMS off)."""
+    try:
+        # Aumentei o timeout e usei 'q' para evitar erro em alguns setups X
+        result = subprocess.check_output("xset -display :0 q", shell=True, text=True, timeout=5)
+        return "Monitor is Off" in result
+    except:
+        return False
+
+def set_brightness(value):
+    try:
+        with open(BRIGHTNESS_PATH, 'w') as f:
+            f.write(str(value))
+        log_message(f"Brilho principal → {value}")
+    except Exception as e:
+        log_message(f"Erro brilho principal: {e}")
+
+def get_current_gamma_primary():
+    try:
+        output = subprocess.check_output("xrandr --verbose", shell=True, text=True)
+        for line in output.splitlines():
+            if re.search(r"^\s+Gamma:", line):
+                match = re.search(r"Gamma:\s*([\d.]+):([\d.]+):([\d.]+)", line)
+                if match:
+                    return f"{match.group(1)}:{match.group(2)}:{match.group(3)}"
+        return None
+    except Exception as e:
+        log_message(f"Erro ao ler gamma: {e}")
+        return None
+
+def apply_sct(temp):
+    try:
+        # Garante que o sct não vai ser executado se já estiver no tempo esperado
+        subprocess.call(f"sct {temp}", shell=True)
+        log_message(f"sct {temp}K → principal")
+    except Exception as e:
+        log_message(f"Erro sct: {e}")
+
+def apply_hdmi_gamma_brightness(gamma, brightness):
+    cmd = f"xrandr --output {HDMI_OUTPUT} --gamma {gamma} --brightness {brightness}"
+    try:
+        subprocess.call(cmd, shell=True)
+        log_message(f"HDMI → gamma {gamma} | brilho {brightness}")
+    except Exception as e:
+        log_message(f"Erro xrandr HDMI: {e}")
+
+# Função de Periodo MODIFICADA para usar tempos dinâmicos
+# Função de Periodo MODIFICADA para usar tempos dinâmicos
+def get_time_period(t):
+    # CHAMA A FUNÇÃO DINÂMICA
+    T = get_daily_transitions() # <-- Mudança aqui (era get_monthly_transitions)
+
+    if T["NIGHT_START"] <= t < T["MORNING_START"]:
+        return "night"
+    elif T["MORNING_START"] <= t < T["AFTERNOON_START"]:
+        return "morning"
+    elif T["AFTERNOON_START"] <= t < T["EVENING_START"]:
+        return "afternoon"
+    else:
+        return "evening"
+
+# === LOOP PRINCIPAL ===
+while True:
+    time.sleep(2)
+    now = datetime.now()
+    t = now.time()
+    current_period = get_time_period(t)
+
+    # Exibe os tempos de transição para o log para fácil auditoria
+    T_DAILY = get_daily_transitions() # <-- Mudança aqui (era T_MONTH = get_monthly_transitions())
+    log_message(f"\n=== {now.strftime('%H:%M:%S')} | Mês {now.month} | Período: {current_period.upper()} | Morning: {T_DAILY['MORNING_START']} | Evening: {T_DAILY['EVENING_START']} ===")
+
+    if is_monitor_off():
+        log_message("Monitor off → pulando")
+        time.sleep(12)
+        continue
+
+    cfg = SETTINGS[current_period]
+
+    # 1. Brilho principal
+    set_brightness(cfg["brightness"])
+
+    # 2. sct no principal (só se gamma errado)
+    current_gamma = get_current_gamma_primary()
+
+    # Dicionário mapeando a Temperatura (em K) para o Gamma que o sct deve aplicar.
+    # Baseado na calibração padrão do sct/redshift para estas temperaturas.
+    # 'expected_sct_gamma' Monitora a Gamma do monitor Principal e não na do HDMI
+    expected_sct_gamma = {
+        2700: "1.0:1.5:2.6", # Night
+        3500: "1.0:1.3:1.9", # Evening
+        4500: "1.0:1.2:1.4", # Morning
+        6500: "1.0:1.0:1.0"  # Afternoon (Neutro)
+    }.get(cfg["color_temp"])
+
+    if current_gamma != expected_sct_gamma:
+        log_message(f"Gamma principal errado ({current_gamma}) → aplicando sct {cfg['color_temp']}K")
+        apply_sct(cfg["color_temp"])
+        # Pequena pausa após o sct para garantir que a mudança seja aplicada antes do próximo ciclo
+        time.sleep(1.5)
+    else:
+        log_message(f"Gamma principal {cfg['color_temp']}K OK → sct pulado")
+
+    # 3. HDMI: gamma + brilho otimizados
+    apply_hdmi_gamma_brightness(cfg["gamma_hdmi"], cfg["hdmi_brightness"])
+
+    # Tempo de espera principal
+    time.sleep(3)

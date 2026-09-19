@@ -1,0 +1,31 @@
+
+sudo apt-get install faketime
+
+
+systemctl --user stop pos_blue.service
+
+OU
+killall Blue_Brilho.sh
+
+
+faketime '07:00:00' ./Blue_Brilho.sh
+
+________________________________________________________-
+
+# SOBRE COMO LIDAR COM O SERVIÇO NO SYSTEMD;
+
+
+# SE FIZER ALTERAÇÕES EM """ pluma /home/dikson/.config/systemd/user/pos_blue.service """
+systemctl --user daemon-reload
+
+# REINICIAR:
+systemctl --user restart pos_blue.service
+
+# VERIFICAR:
+systemctl --user status pos_blue.service
+
+# INICIAR SERVIÇO:
+systemctl --user start pos_blue.service &
+
+# PARAR
+systemctl --user stop pos_blue.service

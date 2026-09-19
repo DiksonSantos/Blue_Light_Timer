@@ -1,0 +1,35 @@
+Eu só não entendi especificamente se 'uma váriavle na memoria é reescrita ou se um arquivo de configuração é escrito constantemente'. O que acontece de fato ??
+
+
+Ótima pergunta pra fechar de vez esse ponto. Resposta direta: **é uma variável na memória RAM do processo Python que está rodando — nunca toca em disco, nem em arquivo nenhum.**
+
+Deixa eu detalhar o que cada linha faz de fato:
+
+```python
+SETTINGS["evening"] = EVENING_PROFILES[profile_name]
+```
+
+`SETTINGS` é um dicionário Python comum, criado uma única vez quando o script inicia (quando o `systemctl` sobe o `Blue_Brilho.sh` e o interpretador Python executa aquele bloco `SETTINGS = {...}` lá em cima). A partir daí, `SETTINGS` existe **só dentro da memória RAM daquele processo em execução** — é o mesmo tipo de coisa que qualquer variável de qualquer programa: fica na RAM, some completamente quando o processo termina (reinicia o serviço, cai a energia, `kill`, o que for).
+
+Quando `update_evening_profile()` roda `SETTINGS["evening"] = EVENING_PROFILES[...]`, o que acontece é: o Python pega o "endereço" do dicionário `EVENING_PROFILES["gaming"]` (que também já está pronto na RAM, criado no início do script) e faz a chave `"evening"` de `SETTINGS` apontar pra ele. Não tem leitura nem escrita em disco — é só um ponteiro sendo trocado dentro da memória. Isso é praticamente instantâneo (nanosegundos), porque RAM não tem a latência mecânica/eletrônica que disco tem.
+
+**As únicas coisas que de fato tocam fora da memória do processo, no seu script inteiro, são:**
+
+| O que | Onde | Real I/O? |
+|---|---|---|
+| Ler o governor | `/sys/.../scaling_governor` | Leitura de um pseudo-arquivo do kernel (sysfs) — gerado na hora pelo próprio kernel, não é um arquivo real em disco |
+| Escrever o log | `/tmp/pos_Blue_Brilho.log` | Escrita real (mas `/tmp` geralmente já é RAM-backed — `tmpfs` — na maioria das distros) |
+| Mudar o brilho do painel | `/sys/class/backlight/intel_backlight/brightness` | Escrita real em hardware, via sysfs — só quando `set_brightness()` decide aplicar (com cache) |
+| `sct`/`xrandr` | Comunicação com o servidor X11 | Não é arquivo, é uma chamada de processo (subprocess) que fala com o X — só quando necessário (com cache) |
+
+Então: `SETTINGS["evening"]` sendo reescrito toda hora é 100% memória, sem custo de disco. Nenhum "arquivo de configuração" está sendo salvo — se você reiniciar o serviço agora, essa reescrita para o perfil `gaming`/`movie` simplesmente não deixou rastro nenhum em lugar nenhum; ela só existia enquanto o processo estava de pé.
+
+
+
+
+
+Esses dois valores vieram de decisões separadas, em momentos diferentes da conversa — vale reconectar o raciocínio de cada um:
+4300K (color_temp): esse foi o primeiro ajuste que você fez, antes de mexermos no CPU governor. O perfil "BOM" original (pra filme) usava 3500K no evening. Quando você queria jogar nesse horário, achou 3500K quente/amarelado demais e subiu pra 4300K — uma temperatura mais neutra/fria, que deixa as cores mais fiéis (menos filtro amarelo por cima), o que ajuda a distinguir detalhes e cores em jogo. 3500K é ótimo pra imersão em filme (mais aconchegante, menos fadiga visual em sessão longa parado assistindo), mas em jogo onde você precisa reagir a cores/contraste, um branco mais neutro tende a ajudar.
+7000 (brightness): esse eu sugeri depois, quando você pediu pra também variar o brilho do painel entre os dois perfis. O evening original (tanto BOM quanto o que você tinha antes) usava 4000 pra esse campo. Como os jogos que você citou — Resident Evil 9 Requiem, Mafia: The Old Country, Ace Combat 7 — têm cenas propositalmente escuras (horror, ambientação noturna, cockpit escuro), um brilho baixo (4000, ~28% da escala que vimos, comparado ao afternoon 14400) faria você perder detalhe de sombra, tendo que forçar a vista. Subi pra 7000 (quase o dobro) como meio-termo: dá folga suficiente pra enxergar detalhe sem "lavar" o contraste da cena nem chegar perto do brilho de luz de dia (14400).
+Resumindo: 4300K = decisão sua, pra ter cor mais neutra em jogo. 7000 = sugestão minha, calibrada pros jogos específicos que você mencionou, priorizando visibilidade de sombra sem exagerar. Se depois de testar achar que ficou claro ou escuro demais pra algum desses títulos específicos, é só ajustar o número em EVENING_PROFILES["gaming"].
+
